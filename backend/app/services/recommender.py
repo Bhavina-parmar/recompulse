@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 from collections import Counter
 from app.db import EVENTS
+from app.db import IMPRESSIONS
 
 DATA_PATH = Path("../data/items.json")
 
@@ -29,20 +30,21 @@ def get_user_preferred_categories(user_id: int):
 
     return [cat for cat, _ in Counter(clicked_categories).most_common()]
 
+
+
 def recommend_for_user(user_id: int):
     items = load_items()
     preferred_categories = get_user_preferred_categories(user_id)
 
-    if not preferred_categories:
-        return items  # cold start
+    if preferred_categories:
+        preferred = [i for i in items if i["category"] in preferred_categories]
+        others = [i for i in items if i["category"] not in preferred_categories]
+        items = preferred + others
 
-    preferred = [
-        item for item in items
-        if item["category"] in preferred_categories
-    ]
-    others = [
-        item for item in items
-        if item["category"] not in preferred_categories
-    ]
+    # ✅ Track impressions
+    for item in items:
+        item_id = item["id"]
+        IMPRESSIONS[item_id] = IMPRESSIONS.get(item_id, 0) + 1
 
-    return preferred + others
+    return items
+
