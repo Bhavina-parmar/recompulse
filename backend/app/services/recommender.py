@@ -2,7 +2,8 @@ import json
 from pathlib import Path
 from collections import Counter
 from app.db import EVENTS
-from app.db import IMPRESSIONS
+#from app.db import IMPRESSIONS
+from app.db import CLICKS, IMPRESSIONS
 
 DATA_PATH = Path("../data/items.json")
 
@@ -31,20 +32,41 @@ def get_user_preferred_categories(user_id: int):
     return [cat for cat, _ in Counter(clicked_categories).most_common()]
 
 
+def get_item_ctr(item_id: int):
+    impressions = IMPRESSIONS.get(item_id, 0)
+    clicks = CLICKS.get(item_id, 0)
+    return clicks / impressions if impressions > 0 else 0
+def freshness_score(item):
+    # simple version: newer ID = newer item
+    return item["id"] / 100
+def user_preference_score(user_id: int, item):
+    preferred_categories = get_user_preferred_categories(user_id)
+    return 1 if item["category"] in preferred_categories else 0
+def score_item(user_id: int, item):
+    preference = user_preference_score(user_id, item)
+    popularity = get_item_ctr(item["id"])
+    freshness = freshness_score(item)
+
+    return (
+        0.5 * preference +
+        0.3 * popularity +
+        0.2 * freshness
+    )
 
 def recommend_for_user(user_id: int):
     items = load_items()
-    preferred_categories = get_user_preferred_categories(user_id)
 
-    if preferred_categories:
-        preferred = [i for i in items if i["category"] in preferred_categories]
-        others = [i for i in items if i["category"] not in preferred_categories]
-        items = preferred + others
+    scored_items = []
 
-    # ✅ Track impressions
     for item in items:
+        score = score_item(user_id, item)
+        scored_items.append((score, item))
+
+        # track impression
         item_id = item["id"]
         IMPRESSIONS[item_id] = IMPRESSIONS.get(item_id, 0) + 1
 
-    return items
+    scored_items.sort(reverse=True, key=lambda x: x[0])
+
+    return [item for _, item in scored_items]
 
