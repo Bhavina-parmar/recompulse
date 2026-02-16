@@ -3,6 +3,9 @@ from app.models.event import Event
 from app.db import EVENTS, CLICKS
 import json
 from pathlib import Path
+from app.ml.train_model import train
+RETRAIN_THRESHOLD = 20
+NEW_EVENT_COUNT = 0
 router = APIRouter()
 EVENTS_FILE = Path("data/events.json")
 @router.post("/event")
@@ -22,6 +25,13 @@ def log_event(event: Event):
 
     data.append(event_dict)
     EVENTS_FILE.write_text(json.dumps(data, indent=2))
+    global NEW_EVENT_COUNT
+    NEW_EVENT_COUNT += 1
+
+    if NEW_EVENT_COUNT >= RETRAIN_THRESHOLD:
+        print("🔁 Retraining model...")
+        train()
+        NEW_EVENT_COUNT = 0
 
     return {
         "status": "logged",

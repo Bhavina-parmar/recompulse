@@ -1,11 +1,11 @@
 import pandas as pd
 from sklearn.linear_model import LogisticRegression
 import joblib
-
 #from app.db import EVENTS
 from app.services.recommender import load_items
 import json
 from pathlib import Path
+import time
 
 EVENTS_FILE = Path("data/events.json")
 
@@ -55,7 +55,13 @@ def train():
     model = LogisticRegression()
     model.fit(X, y)
 
+    model_name = f"model_{int(time.time())}.pkl"
+    joblib.dump((model, X.columns.tolist()), model_name)
+
+    # update latest pointer
     joblib.dump((model, X.columns.tolist()), "model.pkl")
+
+    print(f"Model saved as {model_name}")
 
     print("Model trained!")
 

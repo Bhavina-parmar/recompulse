@@ -6,6 +6,7 @@ from app.db import EVENTS
 #from app.db import IMPRESSIONS
 from app.db import CLICKS, IMPRESSIONS
 import pandas as pd
+import os
 
 MODEL_PATH = Path("model.pkl")
 
@@ -84,8 +85,19 @@ def ml_score(item):
     data = data[feature_columns]
 
     return model.predict_proba(data)[0][1]
+LAST_MODEL_LOAD_TIME = 0
+def load_model():
+    global model, feature_columns, LAST_MODEL_LOAD_TIME
+
+    model_mtime = os.path.getmtime(MODEL_PATH)
+
+    if model_mtime != LAST_MODEL_LOAD_TIME:
+        print("♻️ Loading new model...")
+        model, feature_columns = joblib.load(MODEL_PATH)
+        LAST_MODEL_LOAD_TIME = model_mtime
 
 def recommend_for_user(user_id: int):
+    load_model()
     items = load_items()
 
     scored_items = []
@@ -105,5 +117,7 @@ def recommend_for_user(user_id: int):
     scored_items.sort(reverse=True, key=lambda x: x[0])
 
     return [item for _, item in scored_items]
+
+
 
 
