@@ -1,9 +1,24 @@
 import json
+import joblib
 from pathlib import Path
 from collections import Counter
 from app.db import EVENTS
 #from app.db import IMPRESSIONS
 from app.db import CLICKS, IMPRESSIONS
+import pandas as pd
+
+MODEL_PATH = Path("model.pkl")
+
+
+try:
+    model, feature_columns = joblib.load(MODEL_PATH)
+    print("✅ MODEL LOADED SUCCESSFULLY")
+except Exception as e:
+    print("❌ MODEL LOAD FAILED:", e)
+    model = None
+    feature_columns = []
+
+
 
 DATA_PATH = Path("../data/items.json")
 
@@ -52,6 +67,23 @@ def score_item(user_id: int, item):
         0.3 * popularity +
         0.2 * freshness
     )
+def ml_score(item):
+    if model is None:
+        return 0
+
+    data = pd.DataFrame([{
+        "category": item["category"]
+    }])
+
+    data = pd.get_dummies(data)
+
+    for col in feature_columns:
+        if col not in data:
+            data[col] = 0
+
+    data = data[feature_columns]
+
+    return model.predict_proba(data)[0][1]
 
 def recommend_for_user(user_id: int):
     items = load_items()
@@ -59,9 +91,13 @@ def recommend_for_user(user_id: int):
     scored_items = []
 
     for item in items:
-        score = score_item(user_id, item)
-        scored_items.append((score, item))
+        score = ml_score(item)   # 👈 define score first
+        print(item["title"], score)
 
+        item_id = item["id"]
+        IMPRESSIONS[item_id] = IMPRESSIONS.get(item_id, 0) + 1
+
+        scored_items.append((score, item))
         # track impression
         item_id = item["id"]
         IMPRESSIONS[item_id] = IMPRESSIONS.get(item_id, 0) + 1
@@ -69,4 +105,5 @@ def recommend_for_user(user_id: int):
     scored_items.sort(reverse=True, key=lambda x: x[0])
 
     return [item for _, item in scored_items]
+
 

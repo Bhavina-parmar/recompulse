@@ -1,5 +1,4 @@
 # In-memory storage (temporary)
-
 EVENTS = []
 
 # Metrics
