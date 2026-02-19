@@ -1,14 +1,14 @@
-const API_BASE = "http://localhost:8000";
+const BASE = "http://127.0.0.1:8000";
 
-export async function getRecommendations(userId) {
-  const res = await fetch(`${API_BASE}/recommend?user_id=${userId}`);
+export const getRecommendations = async (userId) => {
+  const res = await fetch(`${BASE}/recommend?user_id=${userId}`);
   return res.json();
-}
+};
 
-export async function sendEvent(event) {
-  await fetch(`${API_BASE}/event`, {
+export const sendEvent = async (event) => {
+  await fetch(`${BASE}/event`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(event),
   });
-}
+};

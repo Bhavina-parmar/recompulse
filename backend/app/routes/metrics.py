@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from app.db import IMPRESSIONS, CLICKS
+from app.database import IMPRESSIONS, CLICKS
 
 router = APIRouter()
 

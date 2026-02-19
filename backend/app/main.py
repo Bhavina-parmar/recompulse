@@ -4,7 +4,7 @@ from app.routes.recommend import router as recommend_router
 from app.routes.events import router as events_router
 from app.routes.metrics import router as metrics_router
 
-app = FastAPI(title="RecomPulse")
+app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173"],

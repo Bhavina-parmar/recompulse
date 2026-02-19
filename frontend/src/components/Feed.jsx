@@ -1,49 +1,63 @@
 import { useEffect, useState } from "react";
 import { getRecommendations, sendEvent } from "../api";
 
-export default function Feed() {
+export default function Feed({ userId }) {
   const [items, setItems] = useState([]);
-  const USER_ID = 1;
+  const [loading, setLoading] = useState(false);
 
-  useEffect(() => {
-    getRecommendations(USER_ID).then(data => {
-      setItems(data.items);
-    });
-  }, []);
+  const loadFeed = async () => {
+    setLoading(true);
+    try {
+      const data = await getRecommendations(userId);
 
-  const handleClick = (item) => {
-    sendEvent({
-      user_id: USER_ID,
-      item_id: item.id,
-      action: "click"
-    });
+      console.log("API RESPONSE 👉", data);
 
-    alert(`Clicked: ${item.title}`);
-
-    // refresh feed after click
-    getRecommendations(USER_ID).then(data => {
-      setItems(data.items);
-    });
+      setItems(data.items);   // ✅ correct
+    } catch (err) {
+      console.error("Failed to load feed", err);
+      setItems([]);
+    }
+    setLoading(false);
   };
 
+
+  useEffect(() => {
+    loadFeed();
+  }, [userId]);
+
+  const handleClick = async (itemId) => {
+    await sendEvent({
+      user_id: userId,
+      item_id: itemId,
+      action: "click",
+    });
+
+    loadFeed();
+  };
+
+  if (loading) return <p>Loading feed...</p>;
+
   return (
-    <div style={{ padding: "20px" }}>
-      <h2>Recommended Feed</h2>
-      {items.map(item => (
-        <div
-          key={item.id}
-          onClick={() => handleClick(item)}
-          style={{
-            border: "1px solid #ccc",
-            margin: "8px 0",
-            padding: "10px",
-            cursor: "pointer"
-          }}
-        >
-          <strong>{item.title}</strong>
-          <div>{item.category}</div>
-        </div>
-      ))}
+    <div>
+      <h2>Recommendations for User {userId}</h2>
+
+      {Array.isArray(items) &&
+        items.map((item) => (
+          <div
+            key={item.id}
+            onClick={() => handleClick(item.id)}
+            style={{
+              border: "1px solid #ccc",
+              padding: "12px",
+              marginBottom: "12px",
+              borderRadius: "8px",
+              cursor: "pointer",
+            }}
+          >
+            <h3>{item.title}</h3>
+            <p>Category: {item.category}</p>
+          </div>
+        ))}
     </div>
   );
 }
