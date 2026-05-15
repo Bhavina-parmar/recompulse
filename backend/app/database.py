@@ -10,3 +10,8 @@
 # Metrics
 IMPRESSIONS = {}  # item_id -> count
 CLICKS = {}       # item_id -> count
+
+import sqlite3
+
+def get_connection():
+    return sqlite3.connect("recompulse.db")

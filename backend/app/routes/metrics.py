@@ -1,21 +1,21 @@
 from fastapi import APIRouter
-from app.database import IMPRESSIONS, CLICKS
+from app.ml.feature_builder import build_item_stats
 
 router = APIRouter()
 
 @router.get("/metrics")
 def get_metrics():
+    impressions, clicks, ctr, popularity = build_item_stats()
+
     metrics = []
 
-    for item_id, impressions in IMPRESSIONS.items():
-        clicks = CLICKS.get(item_id, 0)
-        ctr = clicks / impressions if impressions > 0 else 0
-
+    for item_id, imp in impressions.items():
         metrics.append({
             "item_id": item_id,
-            "impressions": impressions,
-            "clicks": clicks,
-            "ctr": round(ctr, 3)
+            "impressions": imp,
+            "clicks": clicks.get(item_id, 0),
+            "ctr": round(ctr.get(item_id, 0), 3),
+            "popularity": round(popularity.get(item_id, 0), 4)
         })
 
     return metrics

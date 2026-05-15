@@ -1,17 +1,40 @@
-import json
+from app.core.logger import get_logger
+logger = get_logger("recommender")
+
 import joblib
+import pandas as pd
+import random
+import math
+import time
+import os
 from pathlib import Path
 from collections import Counter
-from app.db.events_store import load_events
-from app.database import CLICKS, IMPRESSIONS
-import pandas as pd
-import os
-from app.ml.feature_builder import build_item_stats, build_user_stats
-from app.ml.feature_builder import build_user_category_affinity
 
+from app.services.semantic_retriever import retrieve_candidates_for_user
+
+from app.db.items_repository import get_all_items
+from app.db.events_repository import get_all_events
+from app.ml.feature_builder import (
+    build_item_stats,
+    build_user_stats,
+    build_user_category_affinity,
+    build_user_recency,
+    compute_item_freshness
+)
+
+# ===============================
+# CONFIG
+# ===============================
+
+MIN_INTERACTIONS = 3
+COLD_START_FEED_SIZE = 6
+EPSILON = 0.2
 
 MODEL_PATH = Path("model.pkl")
-EVENTS= load_events()
+
+# ===============================
+# LOAD MODEL
+# ===============================
 
 try:
     model, feature_columns = joblib.load(MODEL_PATH)
@@ -21,19 +44,37 @@ except Exception as e:
     model = None
     feature_columns = []
 
+LAST_MODEL_LOAD_TIME = 0
 
-BASE_DIR = Path(__file__).resolve().parents[3]
-DATA_PATH = BASE_DIR / "data" / "items.json"
 
-def load_items():
-    with open(DATA_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)
+def load_model():
+    global model, feature_columns, LAST_MODEL_LOAD_TIME
 
+    model_mtime = os.path.getmtime(MODEL_PATH)
+
+    if model_mtime != LAST_MODEL_LOAD_TIME:
+        print("♻️ Loading new model...")
+        model, feature_columns = joblib.load(MODEL_PATH)
+        LAST_MODEL_LOAD_TIME = model_mtime
+
+
+# ===============================
+# HELPER FUNCTIONS
+# ===============================
+
+def get_seen_items(user_id, events):
+    return {
+        e["item_id"]
+        for e in events
+        if e["user_id"] == user_id and e["action"] == "click"
+    }
 
 
 def get_user_preferred_categories(user_id: int):
+    events = get_all_events()
+
     user_events = [
-        e for e in EVENTS
+        e for e in events
         if e["user_id"] == user_id and e["action"] == "click"
     ]
 
@@ -41,7 +82,7 @@ def get_user_preferred_categories(user_id: int):
         return []
 
     clicked_item_ids = [e["item_id"] for e in user_events]
-    items = load_items()
+    items = get_all_items()
 
     clicked_categories = [
         item["category"]
@@ -51,43 +92,27 @@ def get_user_preferred_categories(user_id: int):
 
     return [cat for cat, _ in Counter(clicked_categories).most_common()]
 
-def get_ctr(item_id):
-    imp = IMPRESSIONS.get(item_id, 0)
-    clk = CLICKS.get(item_id, 0)
-    return clk / imp if imp > 0 else 0
 
+def ml_score(user_id, item, impressions, clicks, ctr,popularity,
+             user_clicks, user_cat_affinity,user_recency):
 
-def get_item_ctr(item_id: int):
-    impressions = IMPRESSIONS.get(item_id, 0)
-    clicks = CLICKS.get(item_id, 0)
-    return clicks / impressions if impressions > 0 else 0
-def freshness_score(item):
-    # simple version: newer ID = newer item
-    return item["id"] / 100
-def user_preference_score(user_id: int, item):
-    preferred_categories = get_user_preferred_categories(user_id)
-    return 1 if item["category"] in preferred_categories else 0
-def score_item(user_id: int, item):
-    preference = user_preference_score(user_id, item)
-    popularity = get_item_ctr(item["id"])
-    freshness = freshness_score(item)
-
-    return (
-        0.5 * preference +
-        0.3 * popularity +
-        0.2 * freshness
-    )
-def ml_score(user_id, item, impressions, clicks, ctr, user_clicks,user_cat_affinity):
     if model is None:
         return 0
+
+    now = int(time.time())
+    item_age_hours = (now - item["created_at"]) / 3600
 
     data = pd.DataFrame([{
         "category": item["category"],
         "item_impressions": impressions.get(item["id"], 0),
         "item_clicks": clicks.get(item["id"], 0),
         "item_ctr": ctr.get(item["id"], 0),
+        "item_popularity": popularity.get(item["id"], 0),
+        "user_recency_hours": user_recency.get(user_id, 999),
         "user_total_clicks": user_clicks.get(user_id, 0),
-        "user_category_affinity":user_cat_affinity[user_id].get(item["category"], 0),
+        "user_category_affinity":
+            user_cat_affinity.get(user_id, {}).get(item["category"], 0),
+        "item_age_hours": item_age_hours
     }])
 
     data = pd.get_dummies(data)
@@ -99,45 +124,167 @@ def ml_score(user_id, item, impressions, clicks, ctr, user_clicks,user_cat_affin
     data = data[feature_columns]
 
     return model.predict_proba(data)[0][1]
-LAST_MODEL_LOAD_TIME = 0
-def load_model():
-    global model, feature_columns, LAST_MODEL_LOAD_TIME
 
-    model_mtime = os.path.getmtime(MODEL_PATH)
 
-    if model_mtime != LAST_MODEL_LOAD_TIME:
-        print("♻️ Loading new model...")
-        model, feature_columns = joblib.load(MODEL_PATH)
-        LAST_MODEL_LOAD_TIME = model_mtime
+# ===============================
+# POST-RANKING FRESHNESS BOOST
+# ===============================
 
-# impressions, clicks, ctr = build_item_stats()
+def post_freshness_boost(score, created_at, boost_weight=0.15): 
+    freshness = compute_item_freshness(created_at)
+    return score * (1 + boost_weight * freshness)
 
-def recommend_for_user(user_id: int):
-    load_model()
 
-    items = load_items()
+# ===============================
+# MAIN RECOMMENDER
+# ===============================
 
-    impressions, clicks, ctr = build_item_stats()
+def retrieve_candidates(user_id: int):
+    events = get_all_events()
+    items = get_all_items()
+
+    impressions, clicks, ctr , popularity = build_item_stats()
     user_clicks = build_user_stats()
     user_cat_affinity = build_user_category_affinity()
 
-    scored_items = []
+    user_total_clicks = user_clicks.get(user_id, 0)
 
-    for item in items:
+    # Cold start
+    if user_total_clicks < MIN_INTERACTIONS:
+        print("🧊 Cold start triggered")
+        return cold_start_feed()
+
+    # Otherwise return all items for now
+    # (Later we reduce to top 200 etc.)
+    return items
+
+def rank_candidates(user_id: int, candidates: list):
+    impressions, clicks, ctr, popularity= build_item_stats()
+    user_clicks = build_user_stats()
+    user_cat_affinity = build_user_category_affinity()
+    user_recency = build_user_recency() 
+
+    ranked = []
+
+    for item in candidates:
         score = ml_score(
             user_id,
             item,
             impressions,
             clicks,
             ctr,
+            popularity,
             user_clicks,
-            user_cat_affinity
+            user_cat_affinity,
+            user_recency
         )
 
-        print(item["title"], score)
+        affinity = user_cat_affinity.get(user_id, {}).get(item["category"], 0)
 
+        ranked.append({
+            **item,
+            "score": float(score),
+            "user_affinity": affinity
+        })
+        item["explanation"] = {
+            "user_category_affinity":
+                user_cat_affinity.get(user_id, {})
+                .get(item["category"], 0),
+
+            "item_popularity":
+                popularity.get(item["id"], 0),
+
+            "item_ctr":
+                ctr.get(item["id"], 0)
+        }
+
+    ranked.sort(key=lambda x: x["score"], reverse=True)
+
+
+    return ranked
+
+def post_process(feed: list):
+    def diversify(feed, max_same_category=2):
+        diversified = []
+        category_count = {}
+
+        for item in feed:
+            cat = item["category"]
+            count = category_count.get(cat, 0)
+
+            if count < max_same_category:
+                diversified.append(item)
+                category_count[cat] = count + 1
+
+        return diversified
+
+    return diversify(feed)
+
+
+
+def recommend_for_user(user_id: int):
+
+    candidates = retrieve_candidates_for_user(user_id)
+
+    # Cold start already returns final feed
+    if candidates and "score" in candidates[0]:
+        return candidates
+
+    ranked = rank_candidates(user_id, candidates)
+
+    final_feed = post_process(ranked)
+
+    logger.info(f"User {user_id} final feed generated.")
+
+    return final_feed[:10]
+
+# ===============================
+# TRENDING (DB BASED)
+# ===============================
+
+def get_trending_items():
+
+    items = get_all_items()
+    events = get_all_events()
+
+    now = int(time.time())
+    DECAY_LAMBDA = 0.05
+
+    last_click_time = {}
+    click_counts = {}
+    impression_counts = {}
+
+    for event in events:
+        item_id = event["item_id"]
+
+        if event["action"] == "impression":
+            impression_counts[item_id] = \
+                impression_counts.get(item_id, 0) + 1
+
+        if event["action"] == "click":
+            click_counts[item_id] = \
+                click_counts.get(item_id, 0) + 1
+
+            ts = event["timestamp"]
+            if item_id not in last_click_time or \
+                    ts > last_click_time[item_id]:
+                last_click_time[item_id] = ts
+
+    scored_items = []
+
+    for item in items:
         item_id = item["id"]
-        IMPRESSIONS[item_id] = IMPRESSIONS.get(item_id, 0) + 1
+
+        clicks = click_counts.get(item_id, 0)
+        impressions = impression_counts.get(item_id, 0)
+
+        ctr = clicks / impressions if impressions > 0 else 0
+
+        last_ts = last_click_time.get(item_id, 0)
+        age_hours = (now - last_ts) / 3600 if last_ts > 0 else 9999
+
+        decay = math.exp(-DECAY_LAMBDA * age_hours)
+        score = ctr * decay
 
         scored_items.append((score, item))
 
@@ -146,5 +293,32 @@ def recommend_for_user(user_id: int):
     return [item for _, item in scored_items]
 
 
+# ===============================
+# COLD START FEED
+# ===============================
 
+def cold_start_feed():
+    trending = get_trending_items()
+    items = get_all_items()
 
+    newest = sorted(
+        items,
+        key=lambda x: x["created_at"],
+        reverse=True
+    )
+
+    pool = trending[:5] + newest[:3]
+
+    seen_ids = set()
+    unique = []
+
+    for item in pool:
+        if item["id"] not in seen_ids:
+            enriched = {
+                **item,
+                "score": 0.0,
+                "user_affinity": 0
+            }
+            unique.append(enriched)
+            seen_ids.add(item["id"])
+    return unique[:COLD_START_FEED_SIZE]

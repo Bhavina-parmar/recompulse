@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.env
+
+# Database
+*.db
+
+# ML models
+*.pkl
+
+# Node
+node_modules/
+frontend/dist/
+
+# Vite
+frontend/.vite/
